@@ -171,20 +171,29 @@ __global__ void __launch_bounds__(256, 1) read_kernel_v1(Element* out, const __g
     constexpr int BLOCK_SIZE = 256;
     constexpr int K_PER_ITER = NUM_STAGES * TILE_K;
 
+    int lane_predicate = cute::elect_one_sync();
+    if (threadIdx.x < 32 && lane_predicate == 1) {
+        cute::prefetch_tma_descriptor(reinterpret_cast<cute::TmaDescriptor const*>(&tensor_map));
+    }
+    __syncwarp();
+
+
     extern __shared__ __align__(1024) uint8_t smem_buffer[];
     Element* smem[NUM_STAGES];
     Barrier* full_bars[NUM_STAGES];
     Barrier* empty_bars[NUM_STAGES];
+    #pragma unroll
     for (int i = 0; i < NUM_STAGES; ++i) {
         smem[i] = reinterpret_cast<Element*>(&smem_buffer[i * SMEM_SIZE_PER_STAGE]);
         full_bars[i] = reinterpret_cast<Barrier*>(&smem_buffer[NUM_STAGES * SMEM_SIZE_PER_STAGE + i * sizeof(Barrier)]);
         empty_bars[i] = full_bars[i] + NUM_STAGES;
     }
-    int lane_predicate = cute::elect_one_sync();
     if (threadIdx.x < 32 && lane_predicate == 1) {
-        cute::prefetch_tma_descriptor(reinterpret_cast<cute::TmaDescriptor const*>(&tensor_map));
-        for (int i = 0; i < NUM_STAGES; i++) init(full_bars[i], 1);
-        for (int i = 0; i < NUM_STAGES; i++) init(empty_bars[i], BLOCK_SIZE - 128);
+        #pragma unroll
+        for (int i = 0; i < NUM_STAGES; i++) {
+            init(full_bars[i], 1);
+            init(empty_bars[i], BLOCK_SIZE - 128);
+        }
         cutlass::arch::fence_view_async_shared();
     }
     __syncthreads();
